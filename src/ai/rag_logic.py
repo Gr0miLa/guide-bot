@@ -1,6 +1,7 @@
 import os
 import re
 import faiss
+import asyncio
 import numpy as np
 import pandas as pd
 import logging
@@ -122,6 +123,7 @@ class RAGSystem:
         self.df_retrieval = None
         self.model = None
         self.client = None
+        self.mistral_semaphore = asyncio.Semaphore(1)  # Limit to 1 concurrent request initially
         self._load_components()
 
     def _load_components(self):
@@ -137,11 +139,29 @@ class RAGSystem:
         except Exception as e:
             logging.error(f"Не удалось загрузить компоненты RAG: {e}. Система не будет работать.")
 
+    async def _call_mistral_api(self, messages: list, model: str, retries: int = 5, initial_delay: float = 1.0):
+        for attempt in range(retries):
+            try:
+                async with self.mistral_semaphore:
+                    response = self.client.chat.complete(
+                        model=model,
+                        messages=messages,
+                    )
+                return response
+            except Exception as e:
+                logging.error(f"Ошибка вызова Mistral API (попытка {attempt + 1}/{retries}): {e}")
+                if attempt < retries - 1:
+                    delay = initial_delay * (2 ** attempt)  # Exponential backoff
+                    logging.info(f"Повторная попытка через {delay:.2f} секунд...")
+                    await asyncio.sleep(delay)
+                else:
+                    raise
+
     async def generate_route_rag(self, interests: str, time: str, location) -> Tuple[str, pd.DataFrame]:
         if not (self.index and self.df_retrieval is not None and not self.df_retrieval.empty and self.model and self.client):
             return "Ошибка: Система поиска по объектам не инициализирована. Пожалуйста, проверьте логи сервера.", None
 
-        logging.info(f"Система RAG получила запрос с интересами: {interests}")
+        # logging.info(f"Система RAG получила запрос с интересами: {interests}")
 
         # Create a prompt to find the best category
         category_prompt = f"""
@@ -154,19 +174,19 @@ class RAGSystem:
 Не добавляй ничего лишнего.
 """
 
-        logging.info(f"Промпт для категорий: \b{category_prompt}")
+        # logging.info(f"Промпт для категорий: \b{category_prompt}")
 
         try:
-            category_response = self.client.chat.complete(
-                model="mistral-large-latest",
+            category_response = await self._call_mistral_api(
                 messages=[{
                     "role": "user",
                     "content": category_prompt,
                 }],
+                model="mistral-large-latest",
             )
             response_text = category_response.choices[0].message.content.strip()
             best_categories_ids = [int(cat_id) for cat_id in re.findall(r'\d+', response_text)]
-            logging.info(f"Найдены лучшие категории: {best_categories_ids}")
+            # logging.info(f"Найдены лучшие категории: {best_categories_ids}")
 
             # Filter the DataFrame by the best categories
             filtered_df = self.df_retrieval[self.df_retrieval['category_id'].isin(best_categories_ids)]
@@ -247,22 +267,22 @@ class RAGSystem:
 {distance_info}
 
 Выполни следующие шаги:
-1.  Выбери 3-5 самых подходящих мест из предложенного списка, которые можно посетить за указанное время.
+1.  Выбери несколько самых подходящих мест из предложенного списка, которые можно посетить за указанное время.
 2.  Составь логичный и последовательный пеший маршрут, начиная от текущего местоположения туриста, **учитывая реальные расстояния между точками** для оптимизации пути.
 3.  Для каждого места в маршруте напиши краткое и увлекательное объяснение, почему его стоит посетить.
 4.  Предложи примерный таймлайн прогулки, **основываясь на времени ходьбы между точками (считай среднюю скорость пешехода 4-5 км/ч) и времени на осмотр достопримечательностей**.
-5.  Твой ответ должен быть дружелюбным, структурированным и легким для чтения.
+5.  Твой ответ должен быть дружелюбным, структурированным и легким для чтения через телеграм (поэтому не надо сложных таблиц в ответе).
 """
 
-        logging.info(f"Промпт: {prompt}\n")
+        # logging.info(f"Промпт: {prompt}\n")
 
         try:
-            chat_response = self.client.chat.complete(
-                model="mistral-large-latest",
+            chat_response = await self._call_mistral_api(
                 messages=[{
                     "role": "user",
                     "content": prompt,
                 }],
+                model="mistral-large-latest",
             )
             
             final_route_text = chat_response.choices[0].message.content

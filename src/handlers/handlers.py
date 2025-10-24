@@ -4,6 +4,7 @@ import asyncio
 import os
 
 from aiogram import F, Router, Bot
+from aiogram.enums import ParseMode
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, ReplyKeyboardRemove, FSInputFile
@@ -43,7 +44,6 @@ async def _generate_and_send_route(message: Message, state: FSMContext, location
     gif_message = await message.answer_animation(
         animation=FSInputFile("media/processing.gif"),
     )
-    await asyncio.sleep(2)
     rag_system = RAGSystem()
 
     user_data = await state.get_data()
@@ -82,9 +82,16 @@ async def _generate_and_send_route(message: Message, state: FSMContext, location
         if i == len(message_chunks) - 1:
             builder = InlineKeyboardBuilder()
             builder.add(buttons.remake_route_button)
-            await message.answer(chunk, reply_markup=builder.as_markup())
+            await message.answer(
+                chunk,
+                reply_markup=builder.as_markup(),
+                parse_mode=ParseMode.MARKDOWN  # или 'MarkdownV2' если нужно экранировать спецсимволы
+            )
         else:
-            await message.answer(chunk)
+            await message.answer(
+                chunk,
+                parse_mode=ParseMode.MARKDOWN  # без экранирования, Telegram сам обработает
+            )
 
     await state.clear()
 
